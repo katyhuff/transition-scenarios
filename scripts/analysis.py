@@ -5,35 +5,46 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib import cm
 import collections
+import pylab
+
 
 if len(sys.argv) < 2:
     print('Usage: python analysis.py [cylus_output_file]')
 
 
-def snf(filename):
+def snf(filename, cursor):
     """ prints total snf and isotope mass
 
     Parameters
     ----------
     filename: int
         cyclus output file to be analyzed.
+    cursor: cursor
+        cursor for sqlite3
 
     Returns
     -------
     Returns total snf and isotope mass.
     """
 
-    sink_id = get_sink_agent_ids()
+    cur = cursor
+
+    sink_id = get_sink_agent_ids(cur)
+
+    # get resources that ended up in sink.
     resources = cur.execute(exec_string(sink_id,
-                                        'transactions.receiverId', '*')).fetchall()
+                                        'transactions.receiverId',
+                                        '*')).fetchall()
+    # get array of sum(quantity) and qualid for snf
     snf_inventory = cur.execute(exec_string(sink_id,
-                                            'transactions.receiverId', 'sum(quantity)')).fetchall()[0][0]
+                                            'transactions.receiverId',
+                                            'sum(quantity), qualid') + ' group by qualid').fetchall()
     waste_id = get_waste_id(resources)
-    inven = isotope_calc(waste_id, snf_inventory)
+    inven = isotope_calc(waste_id, snf_inventory, cur)
     return inven
 
 
-def get_sink_agent_ids():
+def get_sink_agent_ids(cursor):
     """ Gets all sink agentIds from Agententry table.
 
         agententry table has the following format:
@@ -42,7 +53,8 @@ def get_sink_agent_ids():
 
     Parameters
     ---------
-    none
+    cursor: cursor
+        cursor for sqlite3
 
     Returns
     -------
@@ -50,6 +62,7 @@ def get_sink_agent_ids():
         array of all the sink agentId values.
     """
 
+    cur = cursor
     sink_id = []
     agent = cur.execute("select * from agententry where spec like '%sink%'")
 
@@ -79,171 +92,6 @@ def get_waste_id(resource_array):
         wasteid.append(res[7])
 
     return set(wasteid)
-
-
-def get_colors():
-    """ Gets colors from a matplotlib dictionary
-
-    Parameters
-    ----------
-    None
-
-    Returns
-    -------
-    Colors: array
-        array of color hex codes
-    """
-
-    colors = []
-    for hex in matplotlib.colors.cnames.items():
-        colors.append(hex[1])
-    return colors
-
-
-def capacity_calc(governments, timestep, entry, exit):
-    """ Adds and subtracts capacity over time for plotting
-
-    Paramters
-    ---------
-    governments: array
-        array of governments (countries)
-    timestep: array
-        array of timestep from 0 to simulation time
-    entry: array
-        power_cap, agentid, parentid, entertime
-        of all entered reactors
-    exit: array
-        power_cap, agentid, parenitd, exittime
-        of all decommissioned reactors
-
-    Returns
-    -------
-    power_dict: dictionary
-        dictionary of capacity progression with country_government as key
-    """
-
-    temp = []
-    power_dict = collections.OrderedDict({})
-
-    for gov in governments:
-        temp = []
-        cap = 0
-        count = 0
-        for num in timestep:
-            for enter in entry:
-                if enter[3] == num and enter[2] == gov[1]:
-                    cap += enter[0]
-                    count += 1
-            for dec in exit:
-                if dec[3] == num and dec[2] == gov[1]:
-                    cap -= dec[0]
-                    count -= 1
-            temp.append(cap)
-        power_dict[gov[0]] = np.asarray(temp)
-
-    return power_dict
-
-
-def stacked_bar_chart(dictionary, timestep, xlabel, ylabel, title):
-    """ Creates stacked bar chart of timstep vs dictionary
-
-    Parameters
-    ----------
-    dictionary: dictionary
-        holds time series data
-    timestep: array
-        array of timestep (x axis)
-    xlabel: string
-        xlabel of plot
-    ylabel: string
-        ylabel of plot
-    title: string
-        title of plot
-
-    Returns
-    -------
-    Stacked bar chart
-    """
-
-    # set different colors for each bar
-    color_index = 0
-    top_index = True
-    prev = ''
-    plot_array = []
-    print(len(dictionary))
-
-    # for every country, create bar chart with different color
-    for key in dictionary:
-        # very first country does not have a 'bottom' argument
-        if top_index is True:
-            plot = plt.bar(1950+(timestep/12), dictionary[key], .5,
-                           color=cm.viridis(1.*color_index/len(dictionary)),
-                           edgecolor='none', label=key)
-            prev = dictionary[key]
-            top_index = False
-        # from the second country has 'bottom' argument
-        else:
-            plot = plt.bar(1950 + (timestep/12), dictionary[key], .5,
-                           color=cm.viridis(1.*color_index/len(dictionary)),
-                           edgecolor='none', bottom=prev, label=key)
-            prev += dictionary[key]
-
-        plot_array.append(plot)
-        color_index += 1
-
-    # plot
-    plt.ylabel(ylabel)
-    plt.title(title)
-    plt.xlabel(xlabel)
-    plt.legend()
-    plt.grid(True)
-    plt.show()
-
-
-def plot_power(filename):
-    """ Gets capacity vs time for every country
-        in stacked bar chart.
-
-    Parameters
-    ----------
-    filename: file
-        cyclus output file used
-
-    Returns
-    -------
-    stacked bar chart of net capapcity vs time
-
-    """
-
-    sim_time = int(cur.execute('SELECT endtime FROM finish').fetchone()[0]) + 1
-    timestep = np.linspace(0, sim_time, num=sim_time + 1)
-    powercap = []
-    reactor_num = []
-    countries = []
-    # get power cap values
-
-    governments = cur.execute('SELECT prototype, agentid FROM agententry\
-                              WHERE spec = ":cycamore:DeployInst"').fetchall()
-
-    entry = cur.execute('SELECT power_cap, agententry.agentid, parentid, entertime\
-                        FROM agententry INNER JOIN\
-                        agentstate_cycamore_reactorinfo\
-                        ON agententry.agentid =\
-                        agentstate_cycamore_reactorinfo.agentid').fetchall()
-
-    exit = cur.execute('SELECT power_cap, agentexit.agentid, parentid, exittime\
-                        FROM agentexit INNER JOIN\
-                        agentstate_cycamore_reactorinfo\
-                        ON agentexit.agentid =\
-                        agentstate_cycamore_reactorinfo.agentid\
-                        INNER JOIN agententry\
-                        ON agentexit.agentid = agententry.agentid').fetchall()
-
-    power_dict = capacity_calc(governments, timestep, entry, exit)
-
-    stacked_bar_chart(power_dict, timestep,
-                      'Time', 'net_capacity',
-                      'Net Capacity in EU vs Time')
 
 
 def exec_string(array, search, whatwant):
@@ -277,7 +125,25 @@ def exec_string(array, search, whatwant):
     return exec_str
 
 
-def isotope_calc(wasteid_array, snf_inventory):
+def get_sum(array, column_index):
+    """ Returns sum of a column in an array
+
+    Paramters:
+    ---------
+    array: array
+        array that contains a column with numbers
+    column_index: int
+        index for the column to be summed
+    """
+    sum = 0
+    for ar in array:
+        sum += ar[column_index]
+
+    return sum
+
+
+
+def isotope_calc(wasteid_array, snf_inventory, cursor):
     """ Calculates isotope mass using mass fraction in compositions table.
 
         Fetches all from compositions table.
@@ -291,7 +157,9 @@ def isotope_calc(wasteid_array, snf_inventory):
     wasteid_array: array
         array of qualid of wastes
     snf_inventory: float
-        total mass of snf_inventory
+        total mass of snf
+    cursor: cursor
+        cursor for sqlite3
 
     Returns
     -------
@@ -301,19 +169,203 @@ def isotope_calc(wasteid_array, snf_inventory):
 
     # Get compositions of different commodities
     # SimId / QualId / NucId / MassFrac
+    cur = cursor
     comp = cur.execute('select * from compositions').fetchall()
+    total_snf_mass = get_sum(snf_inventory, 0)
 
-    nuclide_inven = ['total snf inventory = ' + str(snf_inventory) + 'kg']
+    nuclide_inven = 'total snf inventory = ' + str(total_snf_mass) + 'kg \n'
+    nuclides = []
+    mass_of_nuclides = []
     # if the 'qualid's match,
     # the nuclide quantity and calculated and displayed.
     for isotope in comp:
-        for num in wasteid_array:
-            if num == isotope[1]:
-                nuclide_quantity = str(snf_inventory*isotope[3])
-                nuclide_name = str(nucname.name(isotope[2]))
-                nuclide_inven.append(nuclide_name + ' = ' + nuclide_quantity)
+        for num in snf_inventory:
+            # num[1] = snf inventory qualid 
+            # isotope[1] = compositions qualid 
+            if num[1] == isotope[1]:
+                # num[0] = total mass of one composition
+                # isotope[3] = mass fraction
+                nuclide_quantity = num[0] * isotope[3]
+                #isotope[2] = nucid
+                nuclide_name = isotope[2]
+                nuclides.append(nuclide_name)
+                mass_of_nuclides.append(nuclide_quantity)
+
+    nuclide_set = set(nuclides)
+    mass_dict = collections.OrderedDict({})
+
+    for nuclide in nuclide_set:
+        temp_nuclide_sum = 0 
+        for i in range(len(nuclides)):
+            if nuclides[i] == nuclide:
+                temp_nuclide_sum += mass_of_nuclides[i]
+        mass_dict[nuclide] = temp_nuclide_sum
+
+
+    for nuclide in mass_dict:
+        nuclide_name = str(nucname.name(nuclide))
+        nuclide_inven += nuclide_name + ' = ' + str(mass_dict[nuclide]) + 'kg \n'
 
     return nuclide_inven
+
+
+def capacity_calc(governments, timestep, entry, exit):
+    """ Adds and subtracts capacity over time for plotting
+
+    Paramters
+    ---------
+    governments: array
+        array of governments (countries)
+    timestep: array
+        array of timestep from 0 to simulation time
+    entry: array
+        power_cap, agentid, parentid, entertime
+        of all entered reactors
+    exit: array
+        power_cap, agentid, parenitd, exittime
+        of all decommissioned reactors
+
+    Returns
+    -------
+    power_dict: dictionary
+        dictionary of capacity progression with country_government as key
+    num_dict: dictionary
+        dictionary of number of reactors progression
+        with country_government as key
+    """
+
+    power_dict = collections.OrderedDict({})
+    num_dict = collections.OrderedDict({})
+
+    for gov in governments:
+        capacity = []
+        num_reactors = []
+        cap = 0
+        count = 0
+        for num in timestep:
+            for enter in entry:
+                if enter[3] == num and enter[2] == gov[1]:
+                    cap += enter[0]
+                    count += 1
+            for dec in exit:
+                if dec[3] == num and dec[2] == gov[1]:
+                    cap -= dec[0]
+                    count -= 1
+            capacity.append(cap)
+            num_reactors.append(count)
+
+        power_dict[gov[0]] = np.asarray(capacity)
+        num_dict[gov[0]] = np.asarray(num_reactors)
+
+    return power_dict, num_dict
+
+
+def stacked_bar_chart(dictionary, timestep, xlabel, ylabel, title, outputname):
+    """ Creates stacked bar chart of timstep vs dictionary
+
+    Parameters
+    ----------
+    dictionary: dictionary
+        holds time series data
+    timestep: array
+        array of timestep (x axis)
+    xlabel: string
+        xlabel of plot
+    ylabel: string
+        ylabel of plot
+    title: string
+        title of plot
+
+    Returns
+    -------
+    Stacked bar chart
+    """
+
+    # set different colors for each bar
+    color_index = 0
+    top_index = True
+    prev = ''
+    plot_array = []
+    # for every country, create bar chart with different color
+    for key in dictionary:
+        label = key.replace('_government', '')
+        # very first country does not have a 'bottom' argument
+        if top_index is True:
+            plot = plt.bar(1950+(timestep/12), dictionary[key], .5,
+                           color=cm.viridis(1.*color_index/len(dictionary)),
+                           edgecolor='none', label=label)
+            prev = dictionary[key]
+            top_index = False
+        # from the second country has 'bottom' argument
+        else:
+            plot = plt.bar(1950 + (timestep/12), dictionary[key], .5,
+                           color=cm.viridis(1.*color_index/len(dictionary)),
+                           edgecolor='none', bottom=prev, label=label)
+            prev += dictionary[key]
+
+        plot_array.append(plot)
+        color_index += 1
+
+    # plot
+    plt.ylabel(ylabel)
+    plt.title(title)
+    plt.xlabel(xlabel)
+    plt.legend(loc=(1.0, 0))
+    plt.grid(True)
+    plt.savefig(outputname, format='png', bbox_inches='tight')
+
+
+def plot_power(filename, cursor):
+    """ Gets capacity vs time for every country
+        in stacked bar chart.
+
+    Parameters
+    ----------
+    filename: file
+        cyclus output file used
+    cursor: cursor
+        cursor for sqlite3
+
+    Returns
+    -------
+    stacked bar chart of net capapcity vs time
+
+    """
+    cur = cursor
+    sim_time = int(cur.execute('SELECT endtime FROM finish').fetchone()[0]) + 1
+    timestep = np.linspace(0, sim_time, num=sim_time + 1)
+    powercap = []
+    reactor_num = []
+    countries = []
+    # get power cap values
+
+    governments = cur.execute('SELECT prototype, agentid FROM agententry\
+                              WHERE spec = ":cycamore:DeployInst"').fetchall()
+
+    entry = cur.execute('SELECT power_cap, agententry.agentid, parentid, entertime\
+                        FROM agententry INNER JOIN\
+                        agentstate_cycamore_reactorinfo\
+                        ON agententry.agentid =\
+                        agentstate_cycamore_reactorinfo.agentid').fetchall()
+
+    exit = cur.execute('SELECT power_cap, agentexit.agentid, parentid, exittime\
+                        FROM agentexit INNER JOIN\
+                        agentstate_cycamore_reactorinfo\
+                        ON agentexit.agentid =\
+                        agentstate_cycamore_reactorinfo.agentid\
+                        INNER JOIN agententry\
+                        ON agentexit.agentid = agententry.agentid').fetchall()
+
+    power_dict, num_dict = capacity_calc(governments, timestep, entry, exit)
+
+    stacked_bar_chart(power_dict, timestep,
+                      'Time', 'net_capacity',
+                      'Net Capacity vs Time', 'power_plot.png')
+    plt.figure()
+    stacked_bar_chart(num_dict, timestep,
+                      'Time', 'num_reactors',
+                      'Number of Reactors vs Time', 'number_plot.png')
+
 
 
 if __name__ == "__main__":
@@ -322,5 +374,5 @@ if __name__ == "__main__":
 
     with con:
         cur = con.cursor()
-        print(snf(file))
-        plot_power(file)
+        print(snf(file, cur))
+        plot_power(file, cur)
